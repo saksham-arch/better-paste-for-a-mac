@@ -1,0 +1,17 @@
+{
+  "ignoredBundleIdentifiers" : [
+    "com.1password.1password",
+    "com.agilebits.onepassword7",
+    "com.apple.keychainaccess"
+  ],
+  "maxHistoryItems" : 80,
+  "mergeDuplicates" : true,
+  "pasteShortcut" : {
+    "key" : "v",
+    "modifiers" : [
+      "control"
+    ]
+  },
+  "restoreClipboardAfterPaste" : true,
+  "visibleItemCount" : 7
+}
