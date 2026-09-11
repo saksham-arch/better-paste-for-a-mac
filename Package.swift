@@ -20,6 +20,7 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("SwiftUI")
             ]
-        )
+        ),
+        .testTarget(name: "BetterPasteTests", dependencies: ["BetterPaste"])
     ]
 )

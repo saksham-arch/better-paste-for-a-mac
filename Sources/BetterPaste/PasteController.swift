@@ -38,88 +38,59 @@ final class PasteController {
             return
         }
 
-        let previousText = pasteboard.string(forType: .string)
+        guard let targetApp, targetApp.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            showError("Choose a destination app", detail: "Open the picker with your shortcut while the app you want to paste into is active.")
+            return
+        }
+
+        let previous = ClipboardTransfer.snapshot(pasteboard)
+        let objects = ClipboardTransfer.objects(for: items, textTransformer: textTransformer, imageTransformer: imageTransformer)
+        guard !objects.isEmpty else { return }
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects(objects) else {
+            ClipboardTransfer.restore(previous, to: pasteboard)
+            showError("Could not prepare the clipboard", detail: "Try copying the item again.")
+            return
+        }
+        ClipboardTransfer.ignoredChangeCount = pasteboard.changeCount
+        let writtenCount = pasteboard.changeCount
         let shouldRestore = ConfigManager.shared.config.restoreClipboardAfterPaste
 
-        pasteboard.clearContents()
-        
-        if items.count == 1 {
-            let item = items[0]
-            switch item.payload {
-            case .text(let string):
-                pasteboard.setString(textTransformer.transform(string), forType: .string)
-            case .richText(let attrString, let plain):
-                if textTransformer == .none {
-                    pasteboard.writeObjects([attrString])
-                } else {
-                    pasteboard.setString(textTransformer.transform(plain), forType: .string)
-                }
-            case .image(let image, _):
-                if imageTransformer == .grayscale {
-                    if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                        let context = CIContext()
-                        let ciImage = CIImage(cgImage: cgImage)
-                        if let filter = CIFilter(name: "CIColorControls") {
-                            filter.setValue(ciImage, forKey: kCIInputImageKey)
-                            filter.setValue(0.0, forKey: kCIInputSaturationKey)
-                            if let output = filter.outputImage, let outCG = context.createCGImage(output, from: output.extent) {
-                                let grayImage = NSImage(cgImage: outCG, size: image.size)
-                                pasteboard.writeObjects([grayImage])
-                            } else {
-                                pasteboard.writeObjects([image])
-                            }
-                        } else {
-                            pasteboard.writeObjects([image])
-                        }
-                    } else {
-                        pasteboard.writeObjects([image])
-                    }
-                } else {
-                    pasteboard.writeObjects([image])
-                }
-            }
-        } else {
-            let joined = items.map { item -> String in
-                let plain = item.payload.plainText
-                return textTransformer.transform(plain)
-            }.joined(separator: "\n")
-            
-            pasteboard.setString(joined, forType: .string)
-        }
-        
-        NSLog("Better Paste: clipboard set, yielding activation to target")
-
-        if let targetApp {
-            NSApp.yieldActivation(to: targetApp)
-            targetApp.activate()
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            if let targetApp, !targetApp.isActive {
-                NSLog("Better Paste: target not active yet, retrying activation")
-                NSApp.yieldActivation(to: targetApp)
+        NSApp.yieldActivation(to: targetApp)
+        targetApp.activate()
+        Task { @MainActor in
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                if targetApp.isActive { break }
                 targetApp.activate()
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                NSLog("Better Paste: sending ⌘V now")
-                self?.sendCommandV()
+            guard pasteboard.changeCount == writtenCount else { return }
+            guard targetApp.isActive else {
+                ClipboardTransfer.restore(previous, to: pasteboard)
+                self.showError("Could not activate the destination", detail: "Switch to the destination app and try again.")
+                return
             }
-        }
-
-        guard shouldRestore, let previousText else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [pasteboard] in
-            pasteboard.clearContents()
-            pasteboard.setString(previousText, forType: .string)
-            NSLog("Better Paste: previous clipboard restored")
+            self.sendCommandV()
+            guard shouldRestore else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            ClipboardTransfer.restoreIfUnchanged(previous, to: pasteboard, expectedChangeCount: writtenCount)
         }
     }
 
     private func handleAction(_ action: ActionType, for items: [ClipboardItem]) {
+        if items.count > 1, items.contains(where: { if case .image = $0.payload { return true }; return false }), action == .saveAs {
+            showError("Save one image at a time", detail: "Clear the selection and choose a single image to save as PNG.")
+            return
+        }
         let text = items.map { $0.payload.plainText }.joined(separator: "\n")
         switch action {
         case .saveAs:
             showSavePanel(for: items)
         case .search(let engine):
+            guard !items.contains(where: { if case .image = $0.payload { return true }; return false }) else {
+                showError("Search needs text", detail: "Select a text clip to search the web.")
+                return
+            }
             openSearch(engine, query: text)
         }
     }
@@ -138,10 +109,12 @@ final class PasteController {
             template = config.duckDuckGoURL
         }
 
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let encoded = ClipboardTransfer.encodeQuery(query)
         let urlString = template.contains("%s") ? template.replacingOccurrences(of: "%s", with: encoded) : template + encoded
-        if let url = URL(string: urlString) {
+        if let url = URL(string: urlString), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
             NSWorkspace.shared.open(url)
+        } else {
+            showError("Invalid search URL", detail: "Check this search engine’s URL in Settings.")
         }
     }
 
@@ -165,6 +138,7 @@ final class PasteController {
             panel.allowedContentTypes = [.plainText]
         }
 
+        NSApp.activate()
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             do {
@@ -198,6 +172,14 @@ final class PasteController {
     private enum SavePayload {
         case image(data: Data)
         case text(String)
+    }
+
+    private func showError(_ title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        NSApp.activate()
+        alert.runModal()
     }
 
     private func sendCommandV() {

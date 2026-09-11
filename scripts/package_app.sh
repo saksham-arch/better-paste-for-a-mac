@@ -7,8 +7,9 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
+swift build --package-path "$ROOT_DIR" -c release --disable-sandbox
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-cp "$ROOT_DIR/.build/debug/BetterPaste" "$MACOS_DIR/BetterPaste"
+cp "$ROOT_DIR/.build/release/BetterPaste" "$MACOS_DIR/BetterPaste"
 chmod +x "$MACOS_DIR/BetterPaste"
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
@@ -29,9 +30,9 @@ cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>0.2.0</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>2</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>

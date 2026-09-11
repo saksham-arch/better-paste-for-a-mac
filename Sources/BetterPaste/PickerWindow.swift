@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import SwiftUI
 
 
@@ -79,10 +80,10 @@ enum TextTransformer: String, CaseIterable, Identifiable {
         case .lowercase: return text.lowercased()
         case .titlecase: return text.capitalized
         case .plainText: return text
-        case .urlEncode: return text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
+        case .urlEncode: return ClipboardTransfer.encodeQuery(text)
         case .base64Encode: return text.data(using: .utf8)?.base64EncodedString() ?? text
         case .camelCase, .snakeCase, .kebabCase:
-            let words = text.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+            let words = text.components(separatedBy: CharacterSet.alphanumerics.union(.nonBaseCharacters).inverted).filter { !$0.isEmpty }
             if words.isEmpty { return text }
             switch self {
             case .camelCase:
@@ -113,7 +114,15 @@ final class PickerWindowController {
     }
 
     func show() {
-        pasteTargetApp = NSWorkspace.shared.frontmostApplication
+        if panel?.isVisible == true {
+            panel?.orderOut(nil)
+            pasteTargetApp?.activate()
+            return
+        }
+        if let frontmost = NSWorkspace.shared.frontmostApplication,
+           frontmost.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            pasteTargetApp = frontmost
+        }
         NSLog("Better Paste showing picker; target app: \(pasteTargetApp?.localizedName ?? "unknown")")
 
         if panel == nil {
@@ -137,7 +146,7 @@ final class PickerWindowController {
         let root = PickerView(store: store) { [weak self] items, textTransformer, imageTransformer, action in
             guard let self else { return }
             self.panel?.orderOut(nil)
-            if let target = self.pasteTargetApp {
+            if action == nil, let target = self.pasteTargetApp {
                 NSApp.yieldActivation(to: target)
             }
             self.pasteController.paste(items, textTransformer: textTransformer, imageTransformer: imageTransformer, action: action, into: self.pasteTargetApp)
@@ -208,9 +217,8 @@ struct PickerView: View {
     @Namespace private var namespace
 
     private var filteredItems: [ClipboardItem] {
-        let visible = store.visibleItems
-        guard !query.isEmpty else { return visible }
-        return visible.filter { $0.preview.localizedCaseInsensitiveContains(query) || $0.sourceAppName.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return store.visibleItems }
+        return store.items.filter { $0.preview.localizedCaseInsensitiveContains(query) || $0.sourceAppName.localizedCaseInsensitiveContains(query) }
     }
 
 
@@ -244,7 +252,7 @@ struct PickerView: View {
             .liquidGlassID("search", in: namespace)
 
             if filteredItems.isEmpty {
-                ContentUnavailableView("No Clipboard Items", systemImage: "doc.on.clipboard")
+                ContentUnavailableView(query.isEmpty ? "Your clipboard starts here" : "No matching clips", systemImage: "doc.on.clipboard", description: Text(query.isEmpty ? "Copy some text or an image, then open Better Paste." : "Try different words or an app name."))
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .liquidGlassSurface(radius: 18)
@@ -261,17 +269,34 @@ struct PickerView: View {
                             multiSelectIndex: orderIndex,
                             isTransforming: selectedID == item.id && isTransforming,
                             isActioning: selectedID == item.id && isActioning,
-                            textTransformer: textTransformer,
-                            imageTransformer: imageTransformer,
-                            actionType: actionType
+                            textTransformer: $textTransformer,
+                            imageTransformer: $imageTransformer,
+                            actionType: $actionType
                         )
                         .id(item.id)
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 9))
-                        .onTapGesture {
+                        .onTapGesture(count: 2) {
                             selectedID = item.id
                             pasteSelected()
+                        }
+                        .onTapGesture {
+                            selectedID = item.id
+                            searchFocused = false
+                        }
+                        .contextMenu {
+                            Button("Paste") { selectedID = item.id; selectedItemIDs = []; resetMenus(); pasteSelected() }
+                            Button("Select / Deselect") { selectedID = item.id; toggleSelection() }
+                            Button("Save As…") { onPaste([item], .none, .none, .saveAs) }
+                            if case .image = item.payload {} else {
+                                Menu("Search with") {
+                                    ForEach(SearchEngine.allCases) { engine in
+                                        Button(engine.rawValue) { onPaste([item], .none, .none, .search(engine)) }
+                                    }
+                                }
+                            }
+                            Button("Delete", role: .destructive) { store.delete(id: item.id) }
                         }
                     }
                     .listStyle(.plain)
@@ -281,7 +306,7 @@ struct PickerView: View {
                     .onChange(of: selectedID) {
                         if let selectedID {
                             withAnimation(.easeInOut(duration: 0.15)) {
-                                proxy.scrollTo(selectedID, anchor: .center)
+                                proxy.scrollTo(selectedID)
                             }
                         }
                     }
@@ -290,8 +315,8 @@ struct PickerView: View {
 
             HStack(spacing: 12) {
                 Label("Move", systemImage: "arrow.up.arrow.down")
-                Label("Actions", systemImage: "arrow.left.arrow.right")
-                Label("Preview", systemImage: "space")
+                Text(isTransforming || isActioning ? "← → Choose · Esc Back" : "← Actions · → Format")
+                Text("↵ Paste")
                 Spacer()
                 Text(selectionSummary)
             }
@@ -326,154 +351,77 @@ struct PickerView: View {
         .onChange(of: store.visibleItems) {
             reconcileSelection()
         }
-        .focusable()
-        .onKeyPress { keyPress in
-            if keyPress.key == .space {
-                if isQuickLooking {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isQuickLooking = false
-                    }
-                } else if keyPress.modifiers.contains(.shift) {
-                    toggleSelection()
-                } else {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        isQuickLooking = true
-                    }
-                }
-                return .handled
-            }
-            return .ignored
-        }
-        .onKeyPress(.escape) {
-            if isQuickLooking {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isQuickLooking = false
-                }
-                return .handled
-            }
-            if isTransforming || isActioning {
-                isTransforming = false
-                isActioning = false
-                return .handled
-            }
-            onClose()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            if isQuickLooking {
-                withAnimation(.easeInOut(duration: 0.15)) { isQuickLooking = false }
-            }
-            pasteSelected()
-            return .handled
-        }
-        .onKeyPress(.delete) {
-            if isQuickLooking { return .ignored }
-            if let id = selectedID {
-                store.delete(id: id)
-                selectedItemIDs.removeAll { $0 == id }
-                selectedID = filteredItems.first?.id
-            }
-            return .handled
-        }
-        .onKeyPress(.rightArrow) {
-            if isQuickLooking {
-                moveSelection(1)
-                return .handled
-            }
-            if isTransforming {
-                cycleTransformer(1)
-            } else if isActioning {
-                cycleAction(1)
-            } else {
-                isTransforming = true
-            }
-            return .handled
-        }
-        .onKeyPress(.leftArrow) {
-            if isQuickLooking {
-                moveSelection(-1)
-                return .handled
-            }
-            if isTransforming {
-                cycleTransformer(-1)
-            } else if isActioning {
-                cycleAction(-1)
-            } else {
-                actionType = .saveAs
-                isActioning = true
-            }
-            return .handled
-        }
-        .onKeyPress(characters: CharacterSet(charactersIn: "l")) { _ in
-            guard query.isEmpty else { return .ignored }
-            if isQuickLooking {
-                moveSelection(1)
-                return .handled
-            }
-            if isTransforming {
-                cycleTransformer(1)
-            } else if isActioning {
-                cycleAction(1)
-            } else {
-                isTransforming = true
-            }
-            return .handled
-        }
-        .onKeyPress(characters: CharacterSet(charactersIn: "h")) { _ in
-            guard query.isEmpty else { return .ignored }
-            if isQuickLooking {
-                moveSelection(-1)
-                return .handled
-            }
-            if isTransforming {
-                cycleTransformer(-1)
-            } else if isActioning {
-                cycleAction(-1)
-            } else {
-                actionType = .saveAs
-                isActioning = true
-            }
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            if isQuickLooking {
-                moveSelection(1)
-                return .handled
-            }
-            if isTransforming || isActioning { isTransforming = false; isActioning = false }
-            moveSelection(1)
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            if isQuickLooking {
-                moveSelection(-1)
-                return .handled
-            }
-            if isTransforming || isActioning { isTransforming = false; isActioning = false }
-            moveSelection(-1)
-            return .handled
-        }
-        .onKeyPress(characters: CharacterSet(charactersIn: "j")) { _ in
-            guard query.isEmpty else { return .ignored }
-            if isQuickLooking {
-                moveSelection(1)
-                return .handled
-            }
-            if isTransforming || isActioning { isTransforming = false; isActioning = false }
-            moveSelection(1)
-            return .handled
-        }
-        .onKeyPress(characters: CharacterSet(charactersIn: "k")) { _ in
-            guard query.isEmpty else { return .ignored }
-            if isQuickLooking {
-                moveSelection(-1)
-                return .handled
-            }
-            if isTransforming || isActioning { isTransforming = false; isActioning = false }
-            moveSelection(-1)
-            return .handled
-        }
+        .background(PickerKeyHandler(onKey: handleKey))
         .frame(width: 440, height: 380)
+    }
+
+    private func handleKey(_ event: NSEvent) -> Bool {
+        let code = Int(event.keyCode)
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers.contains(.command) {
+            if code == kVK_ANSI_F { searchFocused = true; return true }
+            if code == kVK_Delete && !searchFocused { deleteSelected(); return true }
+            return false
+        }
+        if modifiers.contains(.option) || modifiers.contains(.control) { return false }
+        if code == kVK_Escape {
+            if isQuickLooking { isQuickLooking = false }
+            else if isTransforming || isActioning { resetMenus() }
+            else if searchFocused && !query.isEmpty { query = "" }
+            else { onClose() }
+            return true
+        }
+        if code == kVK_DownArrow || code == kVK_UpArrow {
+            if let editor = event.window?.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
+            searchFocused = false
+            resetMenus()
+            moveSelection(code == kVK_DownArrow ? 1 : -1)
+            return true
+        }
+        if searchFocused { return false }
+        if code == kVK_Return || code == kVK_ANSI_KeypadEnter { pasteSelected(); return true }
+        if code == kVK_Tab { searchFocused = true; return true }
+        if code == kVK_Home { selectedID = filteredItems.first?.id; resetMenus(); return true }
+        if code == kVK_End { selectedID = filteredItems.last?.id; resetMenus(); return true }
+        if code == kVK_Space {
+            if modifiers.contains(.shift) { toggleSelection() }
+            else if selectedID != nil { isQuickLooking.toggle() }
+            return true
+        }
+        if code == kVK_LeftArrow || code == kVK_RightArrow {
+            let delta = code == kVK_RightArrow ? 1 : -1
+            if isQuickLooking { moveSelection(delta) }
+            else if isTransforming { cycleTransformer(delta) }
+            else if isActioning { cycleAction(delta) }
+            else if selectedID != nil {
+                isTransforming = delta > 0
+                isActioning = delta < 0
+                actionType = .saveAs
+            }
+            return true
+        }
+        if let characters = event.characters, !characters.isEmpty,
+           characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }) {
+            query += characters
+            searchFocused = true
+            return true
+        }
+        return false
+    }
+
+    private func resetMenus() {
+        isTransforming = false
+        isActioning = false
+        textTransformer = .none
+        imageTransformer = .none
+    }
+
+    private func deleteSelected() {
+        guard let id = selectedID else { return }
+        let index = filteredItems.firstIndex(where: { $0.id == id }) ?? 0
+        store.delete(id: id)
+        selectedItemIDs.removeAll { $0 == id }
+        selectedID = filteredItems.isEmpty ? nil : filteredItems[min(index, filteredItems.count - 1)].id
     }
 
     private func pasteSelected() {
@@ -499,7 +447,8 @@ struct PickerView: View {
     }
 
     private func cycleAction(_ delta: Int) {
-        let actions: [ActionType] = [.saveAs] + SearchEngine.allCases.map(ActionType.search)
+        let isImage = filteredItems.first(where: { $0.id == selectedID }).map { if case .image = $0.payload { return true }; return false } ?? false
+        let actions: [ActionType] = isImage ? [.saveAs] : [.saveAs] + SearchEngine.allCases.map(ActionType.search)
         guard let currentIndex = actions.firstIndex(of: actionType) else { return }
         actionType = actions[wrappedIndex(currentIndex + delta, count: actions.count)]
     }
@@ -524,7 +473,7 @@ struct PickerView: View {
     }
 
     private var selectionSummary: String {
-        if selectedItemIDs.count > 1 {
+        if !selectedItemIDs.isEmpty {
             return "\(selectedItemIDs.count) selected"
         }
         return "\(filteredItems.count) clips"
@@ -532,7 +481,8 @@ struct PickerView: View {
 
     private func reconcileSelection() {
         let visibleIDs = Set(filteredItems.map(\.id))
-        selectedItemIDs.removeAll { !visibleIDs.contains($0) }
+        let existingIDs = Set(store.items.map(\.id))
+        selectedItemIDs.removeAll { !existingIDs.contains($0) }
         if selectedID.map(visibleIDs.contains) != true {
             selectedID = filteredItems.first?.id
         }
@@ -635,9 +585,6 @@ struct ScrollableTextPreview: NSViewRepresentable {
 
         scrollView.documentView = textView
 
-        DispatchQueue.main.async {
-            scrollView.window?.makeFirstResponder(textView)
-        }
 
         return scrollView
     }
@@ -647,9 +594,6 @@ struct ScrollableTextPreview: NSViewRepresentable {
         if !textView.attributedString().isEqual(to: attributedText) {
             textView.textStorage?.setAttributedString(attributedText)
             textView.scrollToBeginningOfDocument(nil)
-        }
-        DispatchQueue.main.async {
-            scrollView.window?.makeFirstResponder(textView)
         }
     }
 }
@@ -661,9 +605,9 @@ struct ClipboardRow: View {
     let multiSelectIndex: Int?
     let isTransforming: Bool
     let isActioning: Bool
-    let textTransformer: TextTransformer
-    let imageTransformer: ImageTransformer
-    let actionType: ActionType
+    @Binding var textTransformer: TextTransformer
+    @Binding var imageTransformer: ImageTransformer
+    @Binding var actionType: ActionType
     @Namespace private var rowGlassNamespace
 
     var isImagePayload: Bool {
@@ -788,7 +732,7 @@ struct ClipboardRow: View {
                 Text("Actions:")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.secondary)
-                ForEach(["save-as", "search"], id: \.self) { category in
+                ForEach(isImagePayload ? ["save-as"] : ["save-as", "search"], id: \.self) { category in
                     let selected = actionType.categoryID == category
                     Text(category == "save-as" ? "Save As..." : "Search")
                         .font(.system(size: 11, weight: selected ? .bold : .medium))
@@ -797,6 +741,7 @@ struct ClipboardRow: View {
                         .padding(.vertical, 5)
                         .liquidGlassSurface(radius: 9, interactive: true, tint: selected ? Color.accentColor.opacity(0.30) : nil)
                         .liquidGlassID("action-\(category)", in: rowGlassNamespace)
+                        .onTapGesture { actionType = category == "save-as" ? .saveAs : .search(.google) }
                 }
             }
 
@@ -817,6 +762,7 @@ struct ClipboardRow: View {
                                     .liquidGlassSurface(radius: 9, interactive: true, tint: selected ? Color.accentColor.opacity(0.30) : nil)
                                     .liquidGlassID("search-\(engine.id)", in: rowGlassNamespace)
                                     .id(engine.id)
+                                    .onTapGesture { actionType = .search(engine) }
                             }
                         }
                     }
@@ -849,6 +795,7 @@ struct ClipboardRow: View {
                                 .liquidGlassSurface(radius: 9, interactive: true, tint: imageTransformer == t ? Color.accentColor.opacity(0.30) : nil)
                                 .liquidGlassID("image-transform-\(t.id)", in: rowGlassNamespace)
                                 .id(t.id)
+                                .onTapGesture { imageTransformer = t }
                         }
                     } else {
                         ForEach(TextTransformer.allCases) { t in
@@ -860,6 +807,7 @@ struct ClipboardRow: View {
                                 .liquidGlassSurface(radius: 9, interactive: true, tint: textTransformer == t ? Color.accentColor.opacity(0.30) : nil)
                                 .liquidGlassID("text-transform-\(t.id)", in: rowGlassNamespace)
                                 .id(t.id)
+                                .onTapGesture { textTransformer = t }
                         }
                     }
                 }
@@ -875,5 +823,39 @@ struct ClipboardRow: View {
         }
         .padding(.leading, 40)
         .padding(.bottom, 2)
+    }
+}
+
+struct PickerKeyHandler: NSViewRepresentable {
+    let onKey: (NSEvent) -> Bool
+
+    func makeNSView(context: Context) -> KeyView {
+        let view = KeyView()
+        view.onKey = onKey
+        return view
+    }
+
+    func updateNSView(_ view: KeyView, context: Context) {
+        view.onKey = onKey
+    }
+
+    final class KeyView: NSView {
+        var onKey: ((NSEvent) -> Bool)?
+        private var monitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let window = self.window, window.isKeyWindow,
+                      event.window === window else { return event }
+                return self.onKey?(event) == true ? nil : event
+            }
+        }
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
     }
 }

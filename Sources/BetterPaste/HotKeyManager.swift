@@ -9,14 +9,10 @@ final class HotKeyManager {
     private let carbonKeyCode: UInt32
     private let carbonModifiers: UInt32
 
-    private let pointer: UnsafeMutablePointer<HotKeyManager>
-
     init(config: AppConfig, action: @escaping () -> Void) {
         self.action = action
         self.carbonKeyCode = Self.carbonKeyCode(for: config.pasteShortcut.key)
         self.carbonModifiers = Self.carbonModifiers(for: config.pasteShortcut.modifiers)
-        self.pointer = .allocate(capacity: 1)
-        self.pointer.initialize(to: self)
     }
 
     deinit {
@@ -26,8 +22,6 @@ final class HotKeyManager {
         if let handlerRef {
             RemoveEventHandler(handlerRef)
         }
-        pointer.deinitialize(count: 1)
-        pointer.deallocate()
     }
 
     func register() -> OSStatus {
@@ -43,7 +37,7 @@ final class HotKeyManager {
             hotKeyHandler,
             1,
             &eventType,
-            pointer,
+            Unmanaged.passUnretained(self).toOpaque(),
             &handlerRef
         )
         guard handlerStatus == noErr else { return handlerStatus }
@@ -140,7 +134,7 @@ private func hotKeyHandler(
     userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
     guard let userData else { return OSStatus(eventNotHandledErr) }
-    let manager = userData.assumingMemoryBound(to: HotKeyManager.self).pointee
+    let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
     DispatchQueue.main.async {
         manager.handleHotKey()
     }

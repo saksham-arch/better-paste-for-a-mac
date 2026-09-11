@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.reloadLimit()
         monitor.start()
         installMenuBar()
+        installEditingMenu()
         registerHotKey()
 
         PasteController.requestAccessibilityIfNeeded()
@@ -64,6 +65,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reportHotKeyStatus(hotKeyManager?.register() ?? OSStatus(eventInternalErr))
     }
 
+    private func installEditingMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let edit = NSMenu(title: "Edit")
+        for (title, selector, key) in [
+            ("Undo", "undo:", "z"),
+            ("Cut", "cut:", "x"),
+            ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"),
+            ("Select All", "selectAll:", "a")
+        ] {
+            edit.addItem(NSMenuItem(title: title, action: NSSelectorFromString(selector), keyEquivalent: key))
+        }
+        editItem.submenu = edit
+        main.addItem(editItem)
+        NSApp.mainMenu = main
+    }
+
     @objc private func showPicker() {
         store.reloadLimit()
         pickerController.show()
@@ -77,10 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onClearHistory: { [weak self] in self?.clearHistory() },
             onOpenSettings: { [weak self] in self?.showSettings() },
             onSaveConfig: { [weak self] newConfig in
-                ConfigManager.shared.save(newConfig)
+                var config = ConfigManager.shared.config
+                config.visibleItemCount = newConfig.visibleItemCount
+                config.mergeDuplicates = newConfig.mergeDuplicates
+                ConfigManager.shared.save(config)
                 self?.store.reloadLimit()
                 self?.hotKeyManager?.unregister()
-                self?.hotKeyManager = HotKeyManager(config: newConfig) { [weak self] in
+                self?.hotKeyManager = HotKeyManager(config: config) { [weak self] in
                     self?.showPicker()
                 }
                 self?.reportHotKeyStatus(self?.hotKeyManager?.register() ?? OSStatus(eventInternalErr))
@@ -121,8 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 540),
-                styleMask: [.titled, .closable, .miniaturizable],
+                contentRect: NSRect(x: 0, y: 0, width: 540, height: 620),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
@@ -152,8 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard status != noErr else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Better Paste needs Accessibility permission for \(ConfigManager.shared.config.shortcutDescription)."
-        alert.informativeText = "Grant Accessibility permission to Better Paste in System Settings. This lets Better Paste intercept Control+V before the text field receives it, so the original text is not changed while the picker opens."
+        alert.messageText = "Could not register the keyboard shortcut"
+        alert.informativeText = "Another app may already use this shortcut. Choose a different shortcut in Settings. Error: \(status)."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         alert.runModal()

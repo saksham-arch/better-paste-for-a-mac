@@ -9,7 +9,7 @@ enum ClipboardPayload: Equatable {
     static func == (lhs: ClipboardPayload, rhs: ClipboardPayload) -> Bool {
         switch (lhs, rhs) {
         case (.text(let l), .text(let r)): return l == r
-        case (.richText(_, let lPlain), .richText(_, let rPlain)): return lPlain == rPlain
+        case (.richText(let l, _), .richText(let r, _)): return l.isEqual(to: r)
         case (.image(_, let lData), .image(_, let rData)): return lData == rData && lData != nil
         default: return false
         }
@@ -45,7 +45,7 @@ struct ClipboardItem: Identifiable, Equatable {
 final class ClipboardHistoryStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
 
-    private var config = ConfigManager.shared.config
+    @Published private var config = ConfigManager.shared.config
 
     var visibleItems: [ClipboardItem] {
         Array(items.prefix(config.visibleItemCount))
@@ -73,8 +73,8 @@ final class ClipboardHistoryStore: ObservableObject {
         if config.mergeDuplicates {
             let existingIndex = items.firstIndex { item in
                 switch (item.payload, payload) {
-                case (.text(let l), .text(let r)): return normalized(l) == normalized(r)
-                case (.richText(_, let l), .richText(_, let r)): return normalized(l) == normalized(r)
+                case (.text(let l), .text(let r)): return l == r
+                case (.richText(let l, _), .richText(let r, _)): return l.isEqual(to: r)
                 case (.image(_, let lData), .image(_, let rData)): return lData == rData && lData != nil
                 default: return false
                 }
@@ -118,9 +118,6 @@ final class ClipboardHistoryStore: ObservableObject {
         }
     }
 
-    private func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }
 
 @MainActor
@@ -129,9 +126,6 @@ final class ClipboardMonitor {
     private let store: ClipboardHistoryStore
     private var timer: Timer?
     private var lastChangeCount: Int
-    private var lastRecordedPayload: ClipboardPayload?
-    
-    var isPasting = false
 
     init(store: ClipboardHistoryStore) {
         self.store = store
@@ -152,7 +146,7 @@ final class ClipboardMonitor {
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
         
-        if isPasting { return }
+        if pasteboard.changeCount == ClipboardTransfer.ignoredChangeCount { return }
 
         recordCurrentPasteboard()
     }
@@ -177,8 +171,6 @@ final class ClipboardMonitor {
         }
         
         guard let payload else { return }
-        if let last = lastRecordedPayload, last == payload { return }
-        lastRecordedPayload = payload
         
         store.add(payload: payload, sourceApp: NSWorkspace.shared.frontmostApplication)
     }
