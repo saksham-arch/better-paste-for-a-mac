@@ -2,7 +2,7 @@
 
 A native macOS menu-bar clipboard picker for text, rich text, and images.
 
-[Project page](https://saksham-arch.github.io/better-paste-for-a-mac/) · [Report a bug](https://github.com/saksham-arch/better-paste-for-a-mac/issues)
+[Project guide](https://github.com/saksham-arch/better-paste-for-a-mac/blob/main/docs/index.md) · [Report a bug](https://github.com/saksham-arch/better-paste-for-a-mac/issues)
 
 ## Build and run
 
