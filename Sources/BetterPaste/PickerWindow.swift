@@ -248,14 +248,15 @@ struct PickerView: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
-            .liquidGlassSurface(radius: 18, interactive: true)
+            .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
             .liquidGlassID("search", in: namespace)
 
-            if filteredItems.isEmpty {
+            if isTransforming || isActioning {
+                menuPanel
+            } else if filteredItems.isEmpty {
                 ContentUnavailableView(query.isEmpty ? "Your clipboard starts here" : "No matching clips", systemImage: "doc.on.clipboard", description: Text(query.isEmpty ? "Copy some text or an image, then open Better Paste." : "Try different words or an app name."))
                     .font(.system(size: 13))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .liquidGlassSurface(radius: 18)
             } else {
                 ScrollViewReader { proxy in
                     List(filteredItems) { item in
@@ -302,7 +303,6 @@ struct PickerView: View {
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
                     .background(Color.clear)
-                    .liquidGlassSurface(radius: 18)
                     .onChange(of: selectedID) {
                         if let selectedID {
                             withAnimation(.easeInOut(duration: 0.15)) {
@@ -315,7 +315,7 @@ struct PickerView: View {
 
             HStack(spacing: 12) {
                 Label("Move", systemImage: "arrow.up.arrow.down")
-                Text(isTransforming || isActioning ? "← → Choose · Esc Back" : "← Actions · → Format")
+                Text(isTransforming || isActioning ? "↑ ↓ Choose · Esc Back" : "← Actions · → Format")
                 Text("↵ Paste")
                 Spacer()
                 Text(selectionSummary)
@@ -324,12 +324,11 @@ struct PickerView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
             .frame(height: 30)
-            .liquidGlassSurface(radius: 14)
             .liquidGlassID("footer", in: namespace)
             }
             .padding(10)
         }
-        .clearGlassSurface(radius: 24)
+        .liquidGlassSurface(radius: 22)
         .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
         .overlay {
             if isQuickLooking, let selectedID, let item = filteredItems.first(where: { $0.id == selectedID }) {
@@ -355,11 +354,102 @@ struct PickerView: View {
         .frame(width: 440, height: 380)
     }
 
+    private var menuChoices: [(id: String, title: String, symbol: String)] {
+        let image = filteredItems.first(where: { $0.id == selectedID }).map {
+            if case .image = $0.payload { return true }
+            return false
+        } ?? false
+        if isActioning {
+            return [("save-as", "Save As…", "square.and.arrow.down")] + (image ? [] : SearchEngine.allCases.map {
+                (ActionType.search($0).id, "Search with \($0.rawValue)", "magnifyingglass")
+            })
+        }
+        return image
+            ? ImageTransformer.allCases.map { ($0.id, $0.rawValue, "photo") }
+            : TextTransformer.allCases.map { ($0.id, $0.rawValue, "textformat") }
+    }
+
+    private var activeChoice: String {
+        if isActioning { return actionType.id }
+        if let item = filteredItems.first(where: { $0.id == selectedID }), case .image = item.payload {
+            return imageTransformer.id
+        }
+        return textTransformer.id
+    }
+
+    private var menuPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Button { resetMenus() } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 24, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("Back to clips")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(isActioning ? "Actions" : "Paste format")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(filteredItems.first(where: { $0.id == selectedID })?.preview ?? "")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
+            Divider().padding(.horizontal, 12)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        ForEach(menuChoices, id: \.id) { choice in
+                            Button {
+                                chooseMenuItem(choice.id)
+                                pasteSelected()
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: choice.symbol)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 20)
+                                    Text(choice.title)
+                                    Spacer()
+                                    if choice.id == activeChoice {
+                                        Image(systemName: "return").foregroundStyle(.secondary)
+                                    }
+                                }
+                                .font(.system(size: 13))
+                                .padding(.horizontal, 12)
+                                .frame(height: 36)
+                                .background(choice.id == activeChoice ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .id(choice.id)
+                        }
+                    }
+                    .padding(8)
+                }
+                .onChange(of: activeChoice) { proxy.scrollTo(activeChoice) }
+                .onAppear { proxy.scrollTo(activeChoice) }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func chooseMenuItem(_ id: String) {
+        if isActioning {
+            actionType = ([ActionType.saveAs] + SearchEngine.allCases.map(ActionType.search)).first { $0.id == id } ?? .saveAs
+        } else {
+            if let transform = TextTransformer.allCases.first(where: { $0.id == id }) { textTransformer = transform }
+            if let transform = ImageTransformer.allCases.first(where: { $0.id == id }) { imageTransformer = transform }
+        }
+    }
+
     private func handleKey(_ event: NSEvent) -> Bool {
         let code = Int(event.keyCode)
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command) {
-            if code == kVK_ANSI_F { searchFocused = true; return true }
+            if code == kVK_ANSI_F { resetMenus(); searchFocused = true; return true }
             if code == kVK_Delete && !searchFocused { deleteSelected(); return true }
             return false
         }
@@ -374,13 +464,15 @@ struct PickerView: View {
         if code == kVK_DownArrow || code == kVK_UpArrow {
             if let editor = event.window?.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
             searchFocused = false
-            resetMenus()
-            moveSelection(code == kVK_DownArrow ? 1 : -1)
+            let delta = code == kVK_DownArrow ? 1 : -1
+            if isTransforming { cycleTransformer(delta) }
+            else if isActioning { cycleAction(delta) }
+            else { moveSelection(delta) }
             return true
         }
         if searchFocused { return false }
         if code == kVK_Return || code == kVK_ANSI_KeypadEnter { pasteSelected(); return true }
-        if code == kVK_Tab { searchFocused = true; return true }
+        if code == kVK_Tab { resetMenus(); searchFocused = true; return true }
         if code == kVK_Home { selectedID = filteredItems.first?.id; resetMenus(); return true }
         if code == kVK_End { selectedID = filteredItems.last?.id; resetMenus(); return true }
         if code == kVK_Space {
@@ -391,8 +483,7 @@ struct PickerView: View {
         if code == kVK_LeftArrow || code == kVK_RightArrow {
             let delta = code == kVK_RightArrow ? 1 : -1
             if isQuickLooking { moveSelection(delta) }
-            else if isTransforming { cycleTransformer(delta) }
-            else if isActioning { cycleAction(delta) }
+            else if isTransforming || isActioning { resetMenus() }
             else if selectedID != nil {
                 isTransforming = delta > 0
                 isActioning = delta < 0
@@ -402,6 +493,7 @@ struct PickerView: View {
         }
         if let characters = event.characters, !characters.isEmpty,
            characters.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) && !(0xF700...0xF8FF).contains($0.value) }) {
+            resetMenus()
             query += characters
             searchFocused = true
             return true
@@ -608,221 +700,58 @@ struct ClipboardRow: View {
     @Binding var textTransformer: TextTransformer
     @Binding var imageTransformer: ImageTransformer
     @Binding var actionType: ActionType
-    @Namespace private var rowGlassNamespace
-
-    var isImagePayload: Bool {
-        if case .image = item.payload { return true }
-        return false
-    }
 
     var body: some View {
-        LiquidGlassContainer(spacing: 8) {
-            VStack(spacing: 8) {
-                HStack(spacing: 12) {
-                    ZStack {
-                    if case .image(let nsImage, _) = item.payload {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(width: 28, height: 28)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    } else if case .richText = item.payload {
-                        Image(systemName: "doc.richtext")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(isSelected ? .white : .secondary.opacity(0.9))
-                            .frame(width: 28, height: 28)
-                            .liquidGlassSurface(radius: 8, interactive: true)
-                            .liquidGlassID("richtext-icon", in: rowGlassNamespace)
-                    } else {
-                        Image(systemName: "text.alignleft")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(isSelected ? .white : .secondary.opacity(0.9))
-                            .frame(width: 28, height: 28)
-                            .liquidGlassSurface(radius: 8, interactive: true)
-                            .liquidGlassID("text-icon", in: rowGlassNamespace)
-                    }
-                    
-                    if isMultiSelected, let idx = multiSelectIndex {
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 14, height: 14)
-                            .overlay(Text("\(idx + 1)").font(.system(size: 9, weight: .bold)).foregroundStyle(.white))
-                            .offset(x: 10, y: -10)
-                    }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        let displayPreview = (isSelected && isTransforming && textTransformer != .none && !isImagePayload) ? textTransformer.transform(item.preview) : item.preview
-                        Text(displayPreview.isEmpty ? "Whitespace" : displayPreview)
-                            .lineLimit(isSelected ? 3 : 2)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .font(.system(size: 13, weight: .semibold))
-                        HStack(spacing: 8) {
-                            Text(item.sourceAppName)
-                            Text(item.lastCopiedAt, style: .relative)
-                            if item.copyCount > 1 {
-                                Text("\(item.copyCount)x")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                        }
-                        .font(.system(size: 11))
+        HStack(spacing: 12) {
+            Group {
+                if case .image(let image, _) = item.payload {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "doc.text")
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-                }
-            
-                if isSelected && isActioning {
-                    actionMenu
-                } else if isSelected && isTransforming {
-                    transformMenu
                 }
             }
-            .padding(.vertical, isActioning || isTransforming ? 8 : 7)
-            .padding(.horizontal, 10)
-            .liquidGlassSurface(radius: 14, interactive: true)
-            .liquidGlassID(isSelected ? "selected-row" : "row", in: rowGlassNamespace)
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(selectionFill)
-                    .allowsHitTesting(false)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(selectionStroke, lineWidth: selectionLineWidth)
-                    .allowsHitTesting(false)
-            }
-            .contentShape(Rectangle())
-        }
-    }
+            .frame(width: 32, height: 36)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 5))
 
-    private var selectionFill: Color {
-        if isSelected && isMultiSelected {
-            return Color.accentColor.opacity(0.18)
-        }
-        if isSelected {
-            return Color.accentColor.opacity(0.16)
-        }
-        if isMultiSelected {
-            return Color.green.opacity(0.12)
-        }
-        return .clear
-    }
-
-    private var selectionStroke: Color {
-        if isSelected && isMultiSelected {
-            return Color.green.opacity(0.85)
-        }
-        if isSelected {
-            return Color.accentColor.opacity(0.72)
-        }
-        if isMultiSelected {
-            return Color.green.opacity(0.72)
-        }
-        return Color(nsColor: .separatorColor).opacity(0.28)
-    }
-
-    private var selectionLineWidth: CGFloat {
-        isSelected || isMultiSelected ? 1.6 : 0.8
-    }
-
-    private var actionMenu: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text("Actions:")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                ForEach(isImagePayload ? ["save-as"] : ["save-as", "search"], id: \.self) { category in
-                    let selected = actionType.categoryID == category
-                    Text(category == "save-as" ? "Save As..." : "Search")
-                        .font(.system(size: 11, weight: selected ? .bold : .medium))
-                        .foregroundStyle(selected ? .white : .primary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .liquidGlassSurface(radius: 9, interactive: true, tint: selected ? Color.accentColor.opacity(0.30) : nil)
-                        .liquidGlassID("action-\(category)", in: rowGlassNamespace)
-                        .onTapGesture { actionType = category == "save-as" ? .saveAs : .search(.google) }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.preview.isEmpty ? "Whitespace" : item.preview)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(item.sourceAppName)
+                    Text("·")
+                    Text(item.lastCopiedAt, style: .relative)
                 }
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
-
-            if case .search(let selectedEngine) = actionType {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            Text("With:")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.secondary)
-                            ForEach(SearchEngine.allCases) { engine in
-                                let selected = selectedEngine == engine
-                                Text(engine.rawValue)
-                                    .font(.system(size: 11, weight: selected ? .bold : .medium))
-                                    .foregroundStyle(selected ? .white : .primary)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 5)
-                                    .liquidGlassSurface(radius: 9, interactive: true, tint: selected ? Color.accentColor.opacity(0.30) : nil)
-                                    .liquidGlassID("search-\(engine.id)", in: rowGlassNamespace)
-                                    .id(engine.id)
-                                    .onTapGesture { actionType = .search(engine) }
-                            }
-                        }
-                    }
-                    .onChange(of: selectedEngine) {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            proxy.scrollTo(selectedEngine.id, anchor: .center)
-                        }
-                    }
-                    .onAppear { proxy.scrollTo(selectedEngine.id, anchor: .center) }
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            Spacer(minLength: 4)
+            if isMultiSelected, let index = multiSelectIndex {
+                Text("\(index + 1)")
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 20, height: 20)
+                    .background(Color.accentColor.opacity(0.12), in: Circle())
+            } else if isSelected {
+                Image(systemName: "return")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
             }
         }
-        .padding(.leading, 40)
-        .padding(.bottom, 2)
-        .animation(.easeInOut(duration: 0.18), value: actionType.id)
-    }
-
-    private var transformMenu: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    if isImagePayload {
-                        ForEach(ImageTransformer.allCases) { t in
-                            Text(t.rawValue)
-                                .font(.system(size: 11, weight: imageTransformer == t ? .bold : .medium))
-                                .foregroundStyle(imageTransformer == t ? .white : .primary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .liquidGlassSurface(radius: 9, interactive: true, tint: imageTransformer == t ? Color.accentColor.opacity(0.30) : nil)
-                                .liquidGlassID("image-transform-\(t.id)", in: rowGlassNamespace)
-                                .id(t.id)
-                                .onTapGesture { imageTransformer = t }
-                        }
-                    } else {
-                        ForEach(TextTransformer.allCases) { t in
-                            Text(t.rawValue)
-                                .font(.system(size: 11, weight: textTransformer == t ? .bold : .medium))
-                                .foregroundStyle(textTransformer == t ? .white : .primary)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .liquidGlassSurface(radius: 9, interactive: true, tint: textTransformer == t ? Color.accentColor.opacity(0.30) : nil)
-                                .liquidGlassID("text-transform-\(t.id)", in: rowGlassNamespace)
-                                .id(t.id)
-                                .onTapGesture { textTransformer = t }
-                        }
-                    }
-                }
-            }
-            .onChange(of: isImagePayload ? imageTransformer.id : textTransformer.id) {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    proxy.scrollTo(isImagePayload ? imageTransformer.id : textTransformer.id, anchor: .center)
-                }
-            }
-            .onAppear {
-                proxy.scrollTo(isImagePayload ? imageTransformer.id : textTransformer.id, anchor: .center)
-            }
+        .padding(.horizontal, 12)
+        .frame(height: 58)
+        .background(isSelected ? Color.accentColor.opacity(0.13) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.25) : .clear, lineWidth: 1)
         }
-        .padding(.leading, 40)
-        .padding(.bottom, 2)
+        .contentShape(Rectangle())
     }
 }
 

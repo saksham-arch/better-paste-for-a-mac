@@ -27,7 +27,8 @@ System Settings → Privacy & Security → Accessibility for automatic pasting.
 | ↑ / ↓ | Leave search and browse clips, wrapping at the ends |
 | Return | Paste the selected clip or selection |
 | ← / → while browsing | Open actions / formatting |
-| ← / → in a menu | Cycle choices in both directions |
+| ↑ / ↓ in a menu | Choose an action or format |
+| ← / → in a menu | Return to clips |
 | Escape | Close preview, leave a menu, clear search, or close picker |
 | Command + F or Tab | Focus search |
 | Space while browsing | Preview |
