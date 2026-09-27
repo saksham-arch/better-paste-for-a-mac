@@ -49,7 +49,8 @@ While search is focused, left/right arrows edit the text; press up/down to brows
 ## Clipboard and actions
 
 - Images publish both PNG and TIFF, with optional grayscale conversion.
-- Image clips can extract text locally with macOS Vision and paste the result.
+- Image clips can extract text locally with macOS Vision. Review and edit the
+  recognized text before choosing Paste Text, or cancel without changing the clipboard.
 - Rich text includes a plain-text fallback. Plain Text explicitly strips formatting.
 - Format actions include Markdown for rich text and a quoted JSON string for text.
 - Text selections join with newlines. Mixed/image selections retain separate

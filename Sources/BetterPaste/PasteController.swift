@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import Carbon
 import Foundation
+import SwiftUI
 import UniformTypeIdentifiers
 import Vision
 
@@ -9,6 +10,7 @@ import Vision
 final class PasteController {
     private let store: ClipboardHistoryStore
     private let pasteboard = NSPasteboard.general
+    private var ocrReviewWindow: NSWindow?
 
     init(store: ClipboardHistoryStore) {
         self.store = store
@@ -106,9 +108,7 @@ final class PasteController {
                     showError("No text found", detail: "Try a clearer image or higher resolution copy.")
                     return
                 }
-                var clip = items[0]
-                clip.payload = .text(recognized)
-                paste([clip], textTransformer: .none, imageTransformer: .none, action: nil, into: targetApp)
+                showOCRReview(recognized, from: items[0], into: targetApp)
             }
         case .transcodeAudio, .transcodeVideo:
             guard items.count == 1, case .file(let url) = items[0].payload else {
@@ -137,6 +137,34 @@ final class PasteController {
             }
             openSearch(engine, query: text)
         }
+    }
+
+    private func showOCRReview(_ recognized: String, from item: ClipboardItem, into targetApp: NSRunningApplication?) {
+        ocrReviewWindow?.close()
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Review Extracted Text"
+        window.minSize = NSSize(width: 400, height: 300)
+        window.center()
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: OCRReviewView(text: recognized) { [weak self, weak window] editedText in
+            window?.close()
+            guard let self, let editedText else { return }
+            var clip = item
+            clip.payload = .text(editedText)
+            self.paste([clip], textTransformer: .none, imageTransformer: .none, action: nil, into: targetApp)
+        })
+        ocrReviewWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 
     private func openSearch(_ engine: SearchEngine, query: String) {
