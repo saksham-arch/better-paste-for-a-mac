@@ -3,6 +3,23 @@ import XCTest
 @testable import BetterPaste
 
 final class ClipboardTransferTests: XCTestCase {
+    func testRichTextPreviewFitsGlassAndKeepsClipboardFormattingUntouched() {
+        let original = NSMutableAttributedString(string: "Large dark heading")
+        let range = NSRange(location: 0, length: original.length)
+        original.addAttributes([
+            .font: NSFont.boldSystemFont(ofSize: 42),
+            .foregroundColor: NSColor.black,
+            .backgroundColor: NSColor.white
+        ], range: range)
+
+        let preview = ScrollableTextPreview.displayText(original)
+
+        XCTAssertLessThanOrEqual((preview.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize ?? 0, 18)
+        XCTAssertEqual(preview.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .labelColor)
+        XCTAssertNil(preview.attribute(.backgroundColor, at: 0, effectiveRange: nil))
+        XCTAssertEqual(original.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, .black)
+        XCTAssertEqual(original.attribute(.backgroundColor, at: 0, effectiveRange: nil) as? NSColor, .white)
+    }
     private func item(_ payload: ClipboardPayload) -> ClipboardItem {
         ClipboardItem(id: UUID(), payload: payload, firstCopiedAt: Date(), lastCopiedAt: Date(), copyCount: 1, sourceAppName: "Test", sourceBundleIdentifier: nil)
     }

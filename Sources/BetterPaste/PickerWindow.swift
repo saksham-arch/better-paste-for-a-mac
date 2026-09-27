@@ -328,7 +328,14 @@ struct PickerView: View {
             }
             .padding(10)
         }
-        .liquidGlassSurface(radius: 22)
+        .liquidGlassSurface(radius: 18)
+        .padding(6)
+        .clearGlassSurface(radius: 24)
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(.white.opacity(0.25), lineWidth: 0.75)
+                .allowsHitTesting(false)
+        }
         .shadow(color: .black.opacity(0.22), radius: 24, y: 12)
         .overlay {
             if isQuickLooking, let selectedID, let item = filteredItems.first(where: { $0.id == selectedID }) {
@@ -652,10 +659,39 @@ struct QuickLookOverlay: View {
 struct ScrollableTextPreview: NSViewRepresentable {
     let attributedText: NSAttributedString
 
+    final class Coordinator {
+        var source: NSAttributedString?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    static func displayText(_ source: NSAttributedString) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: source)
+        let range = NSRange(location: 0, length: result.length)
+        guard range.length > 0 else { return result }
+
+        var fonts: [(NSRange, NSFont)] = []
+        result.enumerateAttribute(.font, in: range) { value, segment, _ in
+            let sourceFont = value as? NSFont ?? NSFont.systemFont(ofSize: 13)
+            let size = min(max(sourceFont.pointSize, 12), 18)
+            let font = NSFont(descriptor: sourceFont.fontDescriptor, size: size)
+                ?? NSFont.systemFont(ofSize: size)
+            fonts.append((segment, font))
+        }
+        for (segment, font) in fonts {
+            result.addAttribute(.font, value: font, range: segment)
+        }
+        result.removeAttribute(.backgroundColor, range: range)
+        result.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
+        return result
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = false
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -666,14 +702,15 @@ struct ScrollableTextPreview: NSViewRepresentable {
         textView.isSelectable = true
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 14, height: 14)
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(width: 10_000, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.isHorizontallyResizable = true
+        textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
-        textView.textStorage?.setAttributedString(attributedText)
+        textView.textStorage?.setAttributedString(Self.displayText(attributedText))
+        context.coordinator.source = attributedText
 
         scrollView.documentView = textView
 
@@ -683,10 +720,10 @@ struct ScrollableTextPreview: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        if !textView.attributedString().isEqual(to: attributedText) {
-            textView.textStorage?.setAttributedString(attributedText)
-            textView.scrollToBeginningOfDocument(nil)
-        }
+        guard context.coordinator.source?.isEqual(to: attributedText) != true else { return }
+        textView.textStorage?.setAttributedString(Self.displayText(attributedText))
+        context.coordinator.source = attributedText
+        textView.scrollToBeginningOfDocument(nil)
     }
 }
 
