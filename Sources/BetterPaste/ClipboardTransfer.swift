@@ -31,8 +31,10 @@ enum ClipboardTransfer {
     }
 
     static func objects(for items: [ClipboardItem], textTransformer: TextTransformer, imageTransformer: ImageTransformer) -> [NSPasteboardItem] {
-        let hasImages = items.contains { if case .image = $0.payload { return true }; return false }
-        if items.count > 1 && !hasImages {
+        let hasNonText = items.contains {
+            switch $0.payload { case .image, .file: return true; default: return false }
+        }
+        if items.count > 1 && !hasNonText {
             let result = NSPasteboardItem()
             result.setString(items.map { textTransformer.transform($0.payload.plainText) }.joined(separator: "\n"), forType: .string)
             return [result]
@@ -43,7 +45,7 @@ enum ClipboardTransfer {
             case .text(let text):
                 result.setString(textTransformer.transform(text), forType: .string)
             case .richText(let rich, let plain):
-                result.setString(textTransformer.transform(plain), forType: .string)
+                result.setString(textTransformer == .markdown ? ClipboardFormats.markdown(item.payload) : textTransformer.transform(plain), forType: .string)
                 if textTransformer == .none, let rtf = try? rich.data(from: NSRange(location: 0, length: rich.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
                     result.setData(rtf, forType: .rtf)
                 }
@@ -64,6 +66,8 @@ enum ClipboardTransfer {
                       let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
                 result.setData(tiff, forType: .tiff)
                 result.setData(png, forType: .png)
+            case .file(let url):
+                result.setString(url.absoluteString, forType: .fileURL)
             }
             return result
         }

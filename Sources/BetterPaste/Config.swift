@@ -4,9 +4,12 @@ struct AppConfig: Codable, Equatable {
     var visibleItemCount: Int
     var maxHistoryItems: Int
     var mergeDuplicates: Bool
+    var persistHistory: Bool
     var pasteShortcut: ShortcutConfig
     var restoreClipboardAfterPaste: Bool
     var ignoredBundleIdentifiers: [String]
+    var ignoredTextPatterns: [String]
+    var textRules: [TextRule]
     var googleURL: String
     var chatGPTURL: String
     var bingURL: String
@@ -16,6 +19,7 @@ struct AppConfig: Codable, Equatable {
         visibleItemCount: 7,
         maxHistoryItems: 80,
         mergeDuplicates: true,
+        persistHistory: true,
         pasteShortcut: ShortcutConfig(key: "v", modifiers: ["control"]),
         restoreClipboardAfterPaste: true,
         ignoredBundleIdentifiers: [
@@ -23,6 +27,8 @@ struct AppConfig: Codable, Equatable {
             "com.agilebits.onepassword7",
             "com.apple.keychainaccess"
         ],
+        ignoredTextPatterns: [],
+        textRules: [],
         googleURL: "https://www.google.com/search?q=%s",
         chatGPTURL: "https://chatgpt.com/?q=%s",
         bingURL: "https://www.bing.com/search?&q=%s",
@@ -33,9 +39,12 @@ struct AppConfig: Codable, Equatable {
         case visibleItemCount
         case maxHistoryItems
         case mergeDuplicates
+        case persistHistory
         case pasteShortcut
         case restoreClipboardAfterPaste
         case ignoredBundleIdentifiers
+        case ignoredTextPatterns
+        case textRules
         case searchEngineURL
         case googleURL
         case chatGPTURL
@@ -47,9 +56,12 @@ struct AppConfig: Codable, Equatable {
         visibleItemCount: Int,
         maxHistoryItems: Int,
         mergeDuplicates: Bool,
+        persistHistory: Bool = true,
         pasteShortcut: ShortcutConfig,
         restoreClipboardAfterPaste: Bool,
         ignoredBundleIdentifiers: [String],
+        ignoredTextPatterns: [String] = [],
+        textRules: [TextRule] = [],
         googleURL: String,
         chatGPTURL: String,
         bingURL: String,
@@ -58,9 +70,12 @@ struct AppConfig: Codable, Equatable {
         self.visibleItemCount = visibleItemCount
         self.maxHistoryItems = maxHistoryItems
         self.mergeDuplicates = mergeDuplicates
+        self.persistHistory = persistHistory
         self.pasteShortcut = pasteShortcut
         self.restoreClipboardAfterPaste = restoreClipboardAfterPaste
         self.ignoredBundleIdentifiers = ignoredBundleIdentifiers
+        self.ignoredTextPatterns = ignoredTextPatterns
+        self.textRules = textRules
         self.googleURL = googleURL
         self.chatGPTURL = chatGPTURL
         self.bingURL = bingURL
@@ -75,9 +90,12 @@ struct AppConfig: Codable, Equatable {
         visibleItemCount = try container.decodeIfPresent(Int.self, forKey: .visibleItemCount) ?? defaults.visibleItemCount
         maxHistoryItems = try container.decodeIfPresent(Int.self, forKey: .maxHistoryItems) ?? defaults.maxHistoryItems
         mergeDuplicates = try container.decodeIfPresent(Bool.self, forKey: .mergeDuplicates) ?? defaults.mergeDuplicates
+        persistHistory = try container.decodeIfPresent(Bool.self, forKey: .persistHistory) ?? defaults.persistHistory
         pasteShortcut = try container.decodeIfPresent(ShortcutConfig.self, forKey: .pasteShortcut) ?? defaults.pasteShortcut
         restoreClipboardAfterPaste = try container.decodeIfPresent(Bool.self, forKey: .restoreClipboardAfterPaste) ?? defaults.restoreClipboardAfterPaste
         ignoredBundleIdentifiers = try container.decodeIfPresent([String].self, forKey: .ignoredBundleIdentifiers) ?? defaults.ignoredBundleIdentifiers
+        ignoredTextPatterns = try container.decodeIfPresent([String].self, forKey: .ignoredTextPatterns) ?? defaults.ignoredTextPatterns
+        textRules = try container.decodeIfPresent([TextRule].self, forKey: .textRules) ?? defaults.textRules
         googleURL = try container.decodeIfPresent(String.self, forKey: .googleURL) ?? legacySearchURL ?? defaults.googleURL
         chatGPTURL = try container.decodeIfPresent(String.self, forKey: .chatGPTURL) ?? defaults.chatGPTURL
         bingURL = try container.decodeIfPresent(String.self, forKey: .bingURL) ?? defaults.bingURL
@@ -89,9 +107,12 @@ struct AppConfig: Codable, Equatable {
         try container.encode(visibleItemCount, forKey: .visibleItemCount)
         try container.encode(maxHistoryItems, forKey: .maxHistoryItems)
         try container.encode(mergeDuplicates, forKey: .mergeDuplicates)
+        try container.encode(persistHistory, forKey: .persistHistory)
         try container.encode(pasteShortcut, forKey: .pasteShortcut)
         try container.encode(restoreClipboardAfterPaste, forKey: .restoreClipboardAfterPaste)
         try container.encode(ignoredBundleIdentifiers, forKey: .ignoredBundleIdentifiers)
+        try container.encode(ignoredTextPatterns, forKey: .ignoredTextPatterns)
+        try container.encode(textRules, forKey: .textRules)
         try container.encode(googleURL, forKey: .googleURL)
         try container.encode(chatGPTURL, forKey: .chatGPTURL)
         try container.encode(bingURL, forKey: .bingURL)
@@ -152,6 +173,9 @@ final class ConfigManager {
         var safe = config
         safe.visibleItemCount = min(max(safe.visibleItemCount, 3), 15)
         safe.maxHistoryItems = min(max(safe.maxHistoryItems, safe.visibleItemCount), 500)
+        safe.ignoredBundleIdentifiers = Array(Set(safe.ignoredBundleIdentifiers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+        safe.ignoredTextPatterns = Array(Array(Set(safe.ignoredTextPatterns.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted().prefix(40))
+        safe.textRules = Array(safe.textRules.prefix(12))
         if safe.pasteShortcut.key.isEmpty {
             safe.pasteShortcut = AppConfig.default.pasteShortcut
         }
@@ -168,5 +192,27 @@ final class ConfigManager {
             safe.duckDuckGoURL = AppConfig.default.duckDuckGoURL
         }
         return safe
+    }
+}
+
+struct TextRule: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var find: String
+    var replacement: String
+    var usesRegex = false
+
+    var isValid: Bool {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !find.isEmpty else { return false }
+        return !usesRegex || (try? NSRegularExpression(pattern: find)) != nil
+    }
+
+    func apply(to text: String) -> String {
+        guard isValid else { return text }
+        if usesRegex {
+            guard let regex = try? NSRegularExpression(pattern: find) else { return text }
+            return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: replacement)
+        }
+        return text.replacingOccurrences(of: find, with: replacement)
     }
 }

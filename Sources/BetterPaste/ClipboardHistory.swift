@@ -5,12 +5,14 @@ enum ClipboardPayload: Equatable {
     case text(String)
     case richText(NSAttributedString, plainText: String)
     case image(NSImage, data: Data?)
+    case file(URL)
 
     static func == (lhs: ClipboardPayload, rhs: ClipboardPayload) -> Bool {
         switch (lhs, rhs) {
         case (.text(let l), .text(let r)): return l == r
         case (.richText(let l, _), .richText(let r, _)): return l.isEqual(to: r)
         case (.image(_, let lData), .image(_, let rData)): return lData == rData && lData != nil
+        case (.file(let left), .file(let right)): return left == right
         default: return false
         }
     }
@@ -20,6 +22,7 @@ enum ClipboardPayload: Equatable {
         case .text(let str): return str
         case .richText(_, let str): return str
         case .image: return "[Image]"
+        case .file(let url): return url.lastPathComponent
         }
     }
 }
@@ -32,6 +35,10 @@ struct ClipboardItem: Identifiable, Equatable {
     var copyCount: Int
     var sourceAppName: String
     var sourceBundleIdentifier: String?
+    var isPinned = false
+    var group = ""
+    var note = ""
+    var tags: [String] = []
 
     var preview: String {
         payload.plainText
@@ -46,14 +53,27 @@ final class ClipboardHistoryStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
 
     @Published private var config = ConfigManager.shared.config
+    private var pendingSave: Task<Void, Never>?
+    private let persistenceEnabled: Bool
+
+    init(initialItems: [ClipboardItem]? = nil, persistenceEnabled: Bool = true) {
+        self.persistenceEnabled = persistenceEnabled
+        items = initialItems ?? (persistenceEnabled ? HistoryArchive.load() : nil) ?? []
+        trim()
+    }
 
     var visibleItems: [ClipboardItem] {
-        Array(items.prefix(config.visibleItemCount))
+        Array((items.filter(\.isPinned) + items.filter { !$0.isPinned }).prefix(config.visibleItemCount))
+    }
+
+    var groups: [String] {
+        Array(Set(items.map(\.group).filter { !$0.isEmpty })).sorted()
     }
 
     func reloadLimit() {
         config = ConfigManager.shared.config
         trim()
+        scheduleSave()
     }
 
     func add(payload: ClipboardPayload, sourceApp: NSRunningApplication?) {
@@ -66,6 +86,9 @@ final class ClipboardHistoryStore: ObservableObject {
         if let bundleID, config.ignoredBundleIdentifiers.contains(bundleID) {
             return
         }
+        if config.ignoredTextPatterns.contains(where: { payload.plainText.localizedCaseInsensitiveContains($0) }) {
+            return
+        }
 
         let appName = sourceApp?.localizedName ?? "Unknown App"
         let now = Date()
@@ -76,6 +99,7 @@ final class ClipboardHistoryStore: ObservableObject {
                 case (.text(let l), .text(let r)): return l == r
                 case (.richText(let l, _), .richText(let r, _)): return l.isEqual(to: r)
                 case (.image(_, let lData), .image(_, let rData)): return lData == rData && lData != nil
+                case (.file(let left), .file(let right)): return left == right
                 default: return false
                 }
             }
@@ -87,6 +111,7 @@ final class ClipboardHistoryStore: ObservableObject {
                 existing.sourceBundleIdentifier = bundleID
                 items.insert(existing, at: 0)
                 trim()
+                scheduleSave()
                 return
             }
         }
@@ -102,20 +127,94 @@ final class ClipboardHistoryStore: ObservableObject {
         )
         items.insert(item, at: 0)
         trim()
+        scheduleSave()
     }
 
     func clear() {
+        items.removeAll { !$0.isPinned }
+        scheduleSave()
+    }
+
+    func clearAll() {
         items.removeAll()
+        scheduleSave()
     }
 
     func delete(id: UUID) {
         items.removeAll { $0.id == id }
+        scheduleSave()
+    }
+
+    func togglePin(id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].isPinned.toggle()
+        scheduleSave()
+    }
+
+    func setGroup(id: UUID, name: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items[index].group = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        scheduleSave()
+    }
+
+    func move(id: UUID, before targetID: UUID) {
+        guard id != targetID,
+              let source = items.firstIndex(where: { $0.id == id }),
+              let target = items.firstIndex(where: { $0.id == targetID }),
+              items[source].isPinned == items[target].isPinned else { return }
+        let clip = items.remove(at: source)
+        guard let destination = items.firstIndex(where: { $0.id == targetID }) else { return }
+        items.insert(clip, at: destination)
+        scheduleSave()
+    }
+
+    func update(id: UUID, text: String, group: String, note: String, tags: [String]) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        if case .image = items[index].payload {} else if case .file = items[index].payload {} else if text != items[index].payload.plainText {
+            items[index].payload = .text(text)
+        }
+        items[index].group = String(group.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
+        items[index].note = String(note.prefix(500))
+        items[index].tags = Array(Array(Set(tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })).sorted().prefix(12))
+        scheduleSave()
     }
 
     private func trim() {
         if items.count > config.maxHistoryItems {
-            items.removeLast(items.count - config.maxHistoryItems)
+            let excess = items.count - config.maxHistoryItems
+            let unpinned = items.indices.reversed().filter { !items[$0].isPinned }
+            for index in unpinned.prefix(excess) { items.remove(at: index) }
         }
+    }
+
+    private func scheduleSave() {
+        guard persistenceEnabled else { return }
+        pendingSave?.cancel()
+        pendingSave = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            await HistoryArchive.shared.save(persistenceSnapshot())
+        }
+    }
+
+    func flush() {
+        guard persistenceEnabled else { return }
+        pendingSave?.cancel()
+        HistoryArchive.saveNow(persistenceSnapshot())
+    }
+
+    private func persistenceSnapshot() -> [StoredClip] {
+        var remainingBytes = 40_000_000
+        let candidates = items.filter(\.isPinned) + items.filter { !$0.isPinned && config.persistHistory }
+        let saved = candidates.compactMap { item -> StoredClip? in
+            guard let clip = StoredClip(item) else { return nil }
+            let size = (clip.data?.count ?? 0) + clip.text.utf8.count + clip.note.utf8.count + 512
+            guard size <= remainingBytes else { return nil }
+            remainingBytes -= size
+            return clip
+        }
+        let order = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) })
+        return saved.sorted { order[$0.id, default: .max] < order[$1.id, default: .max] }
     }
 
 }
@@ -154,7 +253,10 @@ final class ClipboardMonitor {
     private func recordCurrentPasteboard() {
         let payload: ClipboardPayload?
         
-        if let tiffData = pasteboard.data(forType: .tiff), let image = NSImage(data: tiffData) {
+        if let fileString = pasteboard.string(forType: .fileURL),
+           let url = URL(string: fileString), url.isFileURL {
+            payload = .file(url)
+        } else if let tiffData = pasteboard.data(forType: .tiff), let image = NSImage(data: tiffData) {
             payload = .image(image, data: tiffData)
         } else if let pngData = pasteboard.data(forType: .png), let image = NSImage(data: pngData) {
             payload = .image(image, data: pngData)

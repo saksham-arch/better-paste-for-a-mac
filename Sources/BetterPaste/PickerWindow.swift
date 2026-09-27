@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import SwiftUI
+import UniformTypeIdentifiers
 
 
 enum ImageTransformer: String, CaseIterable, Identifiable {
@@ -20,12 +21,21 @@ enum SearchEngine: String, CaseIterable, Identifiable {
 
 enum ActionType: Equatable, Identifiable {
     case saveAs
+    case extractText
+    case transcodeAudio
+    case transcodeVideo
+    case rule(UUID)
     case search(SearchEngine)
 
     var id: String {
         switch self {
         case .saveAs:
             return "save-as"
+        case .extractText:
+            return "extract-text"
+        case .transcodeAudio: return "transcode-audio"
+        case .transcodeVideo: return "transcode-video"
+        case .rule(let id): return "rule-\(id.uuidString)"
         case .search(let engine):
             return "search-\(engine.id)"
         }
@@ -35,6 +45,10 @@ enum ActionType: Equatable, Identifiable {
         switch self {
         case .saveAs:
             return "save-as"
+        case .extractText:
+            return "extract-text"
+        case .transcodeAudio, .transcodeVideo: return "transcode"
+        case .rule: return "text-rule"
         case .search:
             return "search"
         }
@@ -44,6 +58,10 @@ enum ActionType: Equatable, Identifiable {
         switch self {
         case .saveAs:
             return "Save As..."
+        case .extractText:
+            return "Extract Text"
+        case .transcodeAudio, .transcodeVideo: return "Transcode"
+        case .rule: return "Text Action"
         case .search:
             return "Search"
         }
@@ -53,6 +71,10 @@ enum ActionType: Equatable, Identifiable {
         switch self {
         case .saveAs:
             return nil
+        case .extractText:
+            return nil
+        case .transcodeAudio, .transcodeVideo: return nil
+        case .rule: return nil
         case .search(let engine):
             return engine.rawValue
         }
@@ -70,6 +92,8 @@ enum TextTransformer: String, CaseIterable, Identifiable {
     case urlEncode = "URL Encode"
     case base64Encode = "Base64"
     case plainText = "Plain Text"
+    case markdown = "Markdown"
+    case jsonString = "JSON String"
     
     var id: String { rawValue }
     
@@ -80,6 +104,8 @@ enum TextTransformer: String, CaseIterable, Identifiable {
         case .lowercase: return text.lowercased()
         case .titlecase: return text.capitalized
         case .plainText: return text
+        case .markdown: return text
+        case .jsonString: return ClipboardFormats.jsonString(text)
         case .urlEncode: return ClipboardTransfer.encodeQuery(text)
         case .base64Encode: return text.data(using: .utf8)?.base64EncodedString() ?? text
         case .camelCase, .snakeCase, .kebabCase:
@@ -199,12 +225,18 @@ final class KeyablePanel: NSPanel {
 }
 
 struct PickerView: View {
+    private enum ClipFilter: Hashable {
+        case recent, pinned, group(String)
+    }
+
     @ObservedObject var store: ClipboardHistoryStore
     let onPaste: ([ClipboardItem], TextTransformer, ImageTransformer, ActionType?) -> Void
     let onClose: () -> Void
 
     @State private var selectedID: ClipboardItem.ID?
     @State private var query = ""
+    @State private var filter: ClipFilter = .recent
+    @State private var editingItem: ClipboardItem?
     @FocusState private var searchFocused: Bool
     
     @State private var selectedItemIDs: [ClipboardItem.ID] = []
@@ -217,8 +249,20 @@ struct PickerView: View {
     @Namespace private var namespace
 
     private var filteredItems: [ClipboardItem] {
-        guard !query.isEmpty else { return store.visibleItems }
-        return store.items.filter { $0.preview.localizedCaseInsensitiveContains(query) || $0.sourceAppName.localizedCaseInsensitiveContains(query) }
+        let base: [ClipboardItem]
+        switch filter {
+        case .recent: base = query.isEmpty ? store.visibleItems : store.items
+        case .pinned: base = store.items.filter(\.isPinned)
+        case .group(let name): base = store.items.filter { $0.group == name }
+        }
+        guard !query.isEmpty else { return base }
+        return base.filter {
+            $0.preview.localizedCaseInsensitiveContains(query)
+                || $0.sourceAppName.localizedCaseInsensitiveContains(query)
+                || $0.group.localizedCaseInsensitiveContains(query)
+                || $0.note.localizedCaseInsensitiveContains(query)
+                || $0.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+        }
     }
 
 
@@ -251,6 +295,26 @@ struct PickerView: View {
             .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
             .liquidGlassID("search", in: namespace)
 
+            HStack(spacing: 6) {
+                filterButton("Recent", symbol: "clock", value: .recent)
+                filterButton("Pinned", symbol: "pin", value: .pinned)
+                if !store.groups.isEmpty {
+                    Menu {
+                        ForEach(store.groups, id: \.self) { group in
+                            Button(group) { filter = .group(group) }
+                        }
+                    } label: {
+                        Label(groupTitle, systemImage: "folder")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 25)
+
             if isTransforming || isActioning {
                 menuPanel
             } else if filteredItems.isEmpty {
@@ -275,6 +339,15 @@ struct PickerView: View {
                             actionType: $actionType
                         )
                         .id(item.id)
+                        .onDrag { NSItemProvider(object: item.id.uuidString as NSString) }
+                        .onDrop(of: ["public.utf8-plain-text"], isTargeted: nil) { providers in
+                            guard let provider = providers.first(where: { $0.canLoadObject(ofClass: NSString.self) }) else { return false }
+                            _ = provider.loadObject(ofClass: NSString.self) { value, _ in
+                                guard let text = value as? String, let id = UUID(uuidString: text) else { return }
+                                Task { @MainActor in store.move(id: id, before: item.id) }
+                            }
+                            return true
+                        }
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets(top: 4, leading: 9, bottom: 4, trailing: 9))
@@ -288,9 +361,37 @@ struct PickerView: View {
                         }
                         .contextMenu {
                             Button("Paste") { selectedID = item.id; selectedItemIDs = []; resetMenus(); pasteSelected() }
+                            Button(item.isPinned ? "Unpin" : "Pin") { store.togglePin(id: item.id) }
+                            Button("Edit Clip…") { editingItem = item }
+                            if !store.groups.isEmpty {
+                                Menu("Move to Group") {
+                                    Button("None") { store.setGroup(id: item.id, name: "") }
+                                    ForEach(store.groups, id: \.self) { group in
+                                        Button(group) { store.setGroup(id: item.id, name: group) }
+                                    }
+                                }
+                            }
                             Button("Select / Deselect") { selectedID = item.id; toggleSelection() }
                             Button("Save As…") { onPaste([item], .none, .none, .saveAs) }
-                            if case .image = item.payload {} else {
+                            if case .image = item.payload {
+                                Button("Extract Text and Paste") { onPaste([item], .none, .none, .extractText) }
+                            } else if case .file(let url) = item.payload {
+                                if let type = UTType(filenameExtension: url.pathExtension) {
+                                    if type.conforms(to: .audio) || type.conforms(to: .movie) {
+                                        Button("Convert to M4A") { onPaste([item], .none, .none, .transcodeAudio) }
+                                    }
+                                    if type.conforms(to: .movie) {
+                                        Button("Convert to MP4") { onPaste([item], .none, .none, .transcodeVideo) }
+                                    }
+                                }
+                            } else {
+                                if !ConfigManager.shared.config.textRules.isEmpty {
+                                    Menu("Text Actions") {
+                                        ForEach(ConfigManager.shared.config.textRules) { rule in
+                                            Button(rule.name) { onPaste([item], .none, .none, .rule(rule.id)) }
+                                        }
+                                    }
+                                }
                                 Menu("Search with") {
                                     ForEach(SearchEngine.allCases) { engine in
                                         Button(engine.rawValue) { onPaste([item], .none, .none, .search(engine)) }
@@ -354,26 +455,67 @@ struct PickerView: View {
         .onChange(of: query) {
             reconcileSelection()
         }
-        .onChange(of: store.visibleItems) {
+        .onChange(of: filter) { reconcileSelection() }
+        .onChange(of: store.items) {
             reconcileSelection()
         }
         .background(PickerKeyHandler(onKey: handleKey))
+        .sheet(item: $editingItem) { item in
+            EditClipSheet(item: item) { text, group, note, tags in
+                store.update(id: item.id, text: text, group: group, note: note, tags: tags)
+                editingItem = nil
+            }
+        }
         .frame(width: 440, height: 380)
     }
 
-    private var menuChoices: [(id: String, title: String, symbol: String)] {
-        let image = filteredItems.first(where: { $0.id == selectedID }).map {
-            if case .image = $0.payload { return true }
-            return false
-        } ?? false
-        if isActioning {
-            return [("save-as", "Save As…", "square.and.arrow.down")] + (image ? [] : SearchEngine.allCases.map {
-                (ActionType.search($0).id, "Search with \($0.rawValue)", "magnifyingglass")
-            })
+    private var groupTitle: String {
+        if case .group(let name) = filter { return name }
+        return "Groups"
+    }
+
+    private func filterButton(_ title: String, symbol: String, value: ClipFilter) -> some View {
+        Button { filter = value } label: {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 11, weight: filter == value ? .semibold : .regular))
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(filter == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
         }
+        .buttonStyle(.plain)
+    }
+
+    private var menuChoices: [(id: String, title: String, symbol: String)] {
+        let payload = filteredItems.first(where: { $0.id == selectedID })?.payload
+        let image = payload.map { if case .image = $0 { return true }; return false } ?? false
+        let file = payload.map { if case .file = $0 { return true }; return false } ?? false
+        if isActioning {
+            let extra: [(id: String, title: String, symbol: String)] = file ? [] : image
+                ? [("extract-text", "Extract text and paste", "text.viewfinder")]
+                : SearchEngine.allCases.map {
+                (ActionType.search($0).id, "Search with \($0.rawValue)", "magnifyingglass")
+            } + ConfigManager.shared.config.textRules.map {
+                (ActionType.rule($0.id).id, $0.name, "text.badge.star")
+            }
+            return [("save-as", "Save As…", "square.and.arrow.down")] + extra + mediaActions(for: payload)
+        }
+        if file { return [] }
         return image
             ? ImageTransformer.allCases.map { ($0.id, $0.rawValue, "photo") }
             : TextTransformer.allCases.map { ($0.id, $0.rawValue, "textformat") }
+    }
+
+    private func mediaActions(for payload: ClipboardPayload?) -> [(id: String, title: String, symbol: String)] {
+        guard let payload, case .file(let url) = payload,
+              let type = UTType(filenameExtension: url.pathExtension) else { return [] }
+        var actions: [(String, String, String)] = []
+        if type.conforms(to: .audio) || type.conforms(to: .movie) {
+            actions.append((ActionType.transcodeAudio.id, "Convert to M4A", "waveform"))
+        }
+        if type.conforms(to: .movie) {
+            actions.append((ActionType.transcodeVideo.id, "Convert to MP4", "film"))
+        }
+        return actions
     }
 
     private var activeChoice: String {
@@ -445,7 +587,9 @@ struct PickerView: View {
 
     private func chooseMenuItem(_ id: String) {
         if isActioning {
-            actionType = ([ActionType.saveAs] + SearchEngine.allCases.map(ActionType.search)).first { $0.id == id } ?? .saveAs
+            actionType = ([ActionType.saveAs, .extractText, .transcodeAudio, .transcodeVideo]
+                + SearchEngine.allCases.map(ActionType.search)
+                + ConfigManager.shared.config.textRules.map { .rule($0.id) }).first { $0.id == id } ?? .saveAs
         } else {
             if let transform = TextTransformer.allCases.first(where: { $0.id == id }) { textTransformer = transform }
             if let transform = ImageTransformer.allCases.first(where: { $0.id == id }) { imageTransformer = transform }
@@ -458,6 +602,14 @@ struct PickerView: View {
         if modifiers.contains(.command) {
             if code == kVK_ANSI_F { resetMenus(); searchFocused = true; return true }
             if code == kVK_Delete && !searchFocused { deleteSelected(); return true }
+            if code == kVK_ANSI_P, let selectedID { store.togglePin(id: selectedID); return true }
+            if let digit = Int(event.charactersIgnoringModifiers ?? ""), (1...9).contains(digit), filteredItems.count >= digit {
+                selectedID = filteredItems[digit - 1].id
+                selectedItemIDs = []
+                resetMenus()
+                pasteSelected()
+                return true
+            }
             return false
         }
         if modifiers.contains(.option) || modifiers.contains(.control) { return false }
@@ -492,7 +644,10 @@ struct PickerView: View {
             if isQuickLooking { moveSelection(delta) }
             else if isTransforming || isActioning { resetMenus() }
             else if selectedID != nil {
-                isTransforming = delta > 0
+                let isFile = filteredItems.first(where: { $0.id == selectedID }).map {
+                    if case .file = $0.payload { return true }; return false
+                } ?? false
+                isTransforming = delta > 0 && !isFile
                 isActioning = delta < 0
                 actionType = .saveAs
             }
@@ -546,8 +701,14 @@ struct PickerView: View {
     }
 
     private func cycleAction(_ delta: Int) {
-        let isImage = filteredItems.first(where: { $0.id == selectedID }).map { if case .image = $0.payload { return true }; return false } ?? false
-        let actions: [ActionType] = isImage ? [.saveAs] : [.saveAs] + SearchEngine.allCases.map(ActionType.search)
+        let payload = filteredItems.first(where: { $0.id == selectedID })?.payload
+        let isImage = payload.map { if case .image = $0 { return true }; return false } ?? false
+        let isFile = payload.map { if case .file = $0 { return true }; return false } ?? false
+        let actions: [ActionType] = isImage ? [.saveAs, .extractText]
+            : isFile ? [.saveAs] + mediaActions(for: payload).compactMap { id, _, _ in
+                [ActionType.transcodeAudio, .transcodeVideo].first { $0.id == id }
+            } : [.saveAs] + SearchEngine.allCases.map(ActionType.search)
+                + ConfigManager.shared.config.textRules.map { .rule($0.id) }
         guard let currentIndex = actions.firstIndex(of: actionType) else { return }
         actionType = actions[wrappedIndex(currentIndex + delta, count: actions.count)]
     }
@@ -727,6 +888,56 @@ struct ScrollableTextPreview: NSViewRepresentable {
     }
 }
 
+struct EditClipSheet: View {
+    let item: ClipboardItem
+    let onSave: (String, String, String, [String]) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text: String
+    @State private var group: String
+    @State private var note: String
+    @State private var tags: String
+
+    init(item: ClipboardItem, onSave: @escaping (String, String, String, [String]) -> Void) {
+        self.item = item
+        self.onSave = onSave
+        _text = State(initialValue: item.payload.plainText)
+        _group = State(initialValue: item.group)
+        _note = State(initialValue: item.note)
+        _tags = State(initialValue: item.tags.joined(separator: ", "))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit Clip").font(.system(size: 18, weight: .semibold))
+            if case .image = item.payload {} else if case .file = item.payload {} else {
+                Text("Text").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $text)
+                    .font(.system(size: 13))
+                    .frame(height: 110)
+                    .scrollContentBackground(.hidden)
+                    .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+            }
+            TextField("Group", text: $group)
+            TextField("Tags, separated by commas", text: $tags)
+            TextField("Note", text: $note)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    onSave(text, group, note, tags.components(separatedBy: ","))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .liquidGlassButton()
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(20)
+        .frame(width: 380)
+        .liquidGlassSurface(radius: 18)
+    }
+}
+
 struct ClipboardRow: View {
     let item: ClipboardItem
     let isSelected: Bool
@@ -745,6 +956,10 @@ struct ClipboardRow: View {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFill()
+                } else if case .file = item.payload {
+                    Image(systemName: "doc")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
                 } else {
                     Image(systemName: "doc.text")
                         .font(.system(size: 17, weight: .regular))
@@ -761,6 +976,10 @@ struct ClipboardRow: View {
                     .lineLimit(1)
                 HStack(spacing: 5) {
                     Text(item.sourceAppName)
+                    if !item.group.isEmpty {
+                        Text("·")
+                        Text(item.group)
+                    }
                     Text("·")
                     Text(item.lastCopiedAt, style: .relative)
                 }
@@ -769,6 +988,11 @@ struct ClipboardRow: View {
                 .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if item.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
             if isMultiSelected, let index = multiSelectIndex {
                 Text("\(index + 1)")
                     .font(.system(size: 10, weight: .semibold).monospacedDigit())

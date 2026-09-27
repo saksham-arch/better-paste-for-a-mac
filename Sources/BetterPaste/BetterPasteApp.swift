@@ -42,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         PasteController.requestAccessibilityIfNeeded()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        store.flush()
+    }
+
     private func installMenuBar() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Better Paste")
@@ -51,7 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Show Clipboard Picker", action: #selector(showPicker), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings", action: #selector(showSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Clear History", action: #selector(clearHistory), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Clear Unpinned History", action: #selector(clearHistory), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Clear All Clips…", action: #selector(clearAllHistory), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit Better Paste", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
@@ -164,6 +169,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func clearHistory() {
         store.clear()
+    }
+
+    @objc private func clearAllHistory() {
+        let alert = NSAlert()
+        alert.messageText = "Clear all clipboard history?"
+        alert.informativeText = "This also removes pinned clips and cannot be undone."
+        alert.addButton(withTitle: "Clear All")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn { store.clearAll() }
     }
 
     @objc private func quit() {

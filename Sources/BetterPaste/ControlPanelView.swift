@@ -89,7 +89,7 @@ struct ControlPanelView: View {
             }
             .liquidGlassButton()
             .liquidGlassID("clear-history-button", in: controlGlassNamespace)
-            .help("Clear clipboard history")
+            .help("Clear unpinned clipboard history")
         }
     }
 
